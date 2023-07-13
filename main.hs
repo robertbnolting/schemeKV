@@ -450,6 +450,13 @@ eval env (List [Atom "if", pred, conseq, alt]) =
       Bool False -> eval env alt
       otherwise  -> eval env conseq
 
+eval env (List [Atom "if", pred, conseq]) =
+  do
+    result <- eval env pred
+    case result of
+      Bool False -> return $ Bool False
+      otherwise  -> eval env conseq
+
 eval env (List (Atom "cond" : clauses)) = eval_cond clauses
   where
     eval_cond ((List [test]) : rest) = do
