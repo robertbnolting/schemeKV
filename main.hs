@@ -452,30 +452,33 @@ eval env (List [Atom "if", pred, conseq, alt]) =
 
 eval env (List (Atom "cond" : clauses)) = eval_cond clauses
   where
-    eval_cond ((List [test, expr]) : rest) = do
-      result <- eval env test
-      case result of
-        Bool False -> eval_cond rest
-        otherwise  -> eval env expr
     eval_cond ((List [test]) : rest) = do
       result <- eval env test
       case result of
         Bool False -> eval_cond rest
         otherwise  -> return $ Bool True
 
+    eval_cond ((List (test : exprs)) : rest) = do
+      result <- eval env test
+
+      case result of
+        Bool False -> eval_cond rest
+        otherwise  -> mapM (eval env) exprs >>= return . last
+
 eval env (List (Atom "case" : key : clauses)) = do
   evaled_key <- eval env key
   eval_case evaled_key clauses
   where
-    eval_case k ((List [Atom "else", expr]) : rest) = eval env expr
+    eval_case k ((List (Atom "else" : exprs)) : rest) = mapM (eval env) exprs >>=
+      return . last
 
-    eval_case k ((List [List (t:tests), expr]) : rest) = do
+    eval_case k ((List ((List (t:tests)) : exprs)) : rest) = do
       result <- liftThrows $ eqv [k, t]
       case result of
         Bool False -> if null tests
                         then eval_case k rest
-                        else eval_case k (List [List tests, expr] : rest)
-        otherwise  -> eval env expr
+                        else eval_case k (List ((List tests) : exprs) : rest)
+        otherwise  -> mapM (eval env) exprs >>= return . last
 
 eval env (Atom "else") = return $ Bool True
 
