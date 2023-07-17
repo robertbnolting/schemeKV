@@ -1,4 +1,6 @@
 module Main where
+import Data.Hashable
+import qualified Data.HashTable.IO as H
 import Text.ParserCombinators.Parsec hiding (spaces)
 import System.Environment
 import System.IO
@@ -8,6 +10,8 @@ import Numeric
 import Data.IORef
 
 type Env = IORef [(String, IORef LispVal)]
+
+type HashTable k v = H.BasicHashTable k v
 
 nullEnv :: IO Env
 nullEnv = newIORef []
@@ -65,6 +69,7 @@ data LispVal = Atom String
              | Port Handle
              | Func { params :: [String], vararg :: (Maybe String),
                       body :: [LispVal], closure :: Env }
+             | HashMap (HashTable LispVal LispVal)
 
 unwordsList :: [LispVal] -> String
 unwordsList = unwords . map showVal
@@ -87,8 +92,21 @@ showVal (Func {params = args, vararg = varargs, body = body, closure = env}) =
        Just arg -> " . " ++ arg) ++ ") ...)"
 showVal (IOFunc _) = "<IO primitive>"
 showVal (Port _) = "<IO port>"
+showVal (HashMap _) = "<HashMap>"
 
 instance Show LispVal where show = showVal
+
+instance Eq LispVal where
+  Atom x == Atom y = x == y
+  String x == String y = x == y
+  Number x == Number y = x == y
+  Character x == Character y = x == y
+
+instance Hashable LispVal where
+  hashWithSalt s (Atom val) = s + (hash val)
+  hashWithSalt s (String val) = s + (hash val)
+  hashWithSalt s (Number val) = s + (hash val)
+  hashWithSalt s (Character val) = s + (hash val)
 
 type IOThrowsError = ExceptT LispError IO
 
@@ -118,7 +136,6 @@ showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected
 showError (Parser parseErr)             = "Parse error at " ++ show parseErr
 
 instance Show LispError where show = showError
-
 
 type ThrowsError = Either LispError
 
@@ -420,6 +437,24 @@ makeFunc varargs env params body = return $ Func (map showVal params) varargs bo
 makeNormalFunc = makeFunc Nothing
 makeVarArgs = makeFunc . Just . showVal
 
+makeHashMap :: Env -> IO LispVal
+makeHashMap env = do
+  ht <- H.new
+  return $ HashMap ht
+
+hashmapInsert :: Env -> LispVal -> LispVal -> LispVal -> IO ()
+hashmapInsert env (HashMap ht) key value = H.insert ht key value
+
+hashmapDelete :: Env -> LispVal -> LispVal -> IO ()
+hashmapDelete env (HashMap ht) key = H.delete ht key
+
+hashmapLookup :: Env -> LispVal -> LispVal -> IO LispVal 
+hashmapLookup env (HashMap ht) key = do
+  res <- H.lookup ht key
+  case res of
+    Nothing  -> return $ Bool False
+    Just val -> return val
+
 apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
 apply (PrimitiveFunc func) args = liftThrows $ func args
 apply (IOFunc func) args = func args
@@ -493,6 +528,7 @@ eval env (List [Atom "load", String filename]) =
   load filename >>= liftM last . mapM (eval env)
 
 eval env (Atom id) = getVar env id
+
 eval env (List [Atom "set!", Atom var, form]) =
   eval env form >>= setVar env var
 eval env (List [Atom "define", Atom var, form]) =
@@ -512,6 +548,25 @@ eval env (List (Atom "lambda" : DottedList params varargs : body)) =
 
 eval env (List (Atom "lambda" : varargs@(Atom _) : body)) =
   makeVarArgs varargs env [] body
+
+eval env (List [Atom "hashmap-make", Atom var]) = do
+  hm <- liftIO $ makeHashMap env
+  defineVar env var hm
+
+eval env (List [Atom "hashmap-insert", Atom var, (List [key, value])]) = do
+  v <- getVar env var
+  liftIO $ hashmapInsert env v key value
+  return value
+
+eval env (List [Atom "hashmap-delete", Atom var, key]) = do
+  v <- getVar env var
+  liftIO $ hashmapDelete env v key
+  return key
+
+eval env (List [Atom "hashmap-lookup", Atom var, key]) = do
+  v <- getVar env var
+  val <- liftIO $ hashmapLookup env v key
+  return val
 
 eval env (List (function : args)) = do
   func <- eval env function
