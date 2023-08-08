@@ -558,14 +558,20 @@ eval env (List [Atom "hashmap-insert", Atom var, (List [key, value])]) = do
   liftIO $ hashmapInsert env v key value
   return value
 
+eval env (List [Atom "hashmap-insert", Atom var, expr]) = do
+  exp <- eval env expr
+  eval env $ (List [Atom "hashmap-insert", Atom var, exp])
+
 eval env (List [Atom "hashmap-delete", Atom var, key]) = do
   v <- getVar env var
-  liftIO $ hashmapDelete env v key
-  return key
+  k <- eval env key
+  liftIO $ hashmapDelete env v k
+  return k
 
 eval env (List [Atom "hashmap-lookup", Atom var, key]) = do
   v <- getVar env var
-  val <- liftIO $ hashmapLookup env v key
+  k <- eval env key
+  val <- liftIO $ hashmapLookup env v k
   return val
 
 eval env (List (function : args)) = do
