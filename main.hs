@@ -6,6 +6,10 @@ import System.Environment
 import System.IO
 import Control.Monad
 import Control.Monad.Except
+import Network.Socket
+import qualified Network.Socket.ByteString as B
+import Data.ByteString.UTF8 as BU (fromString)
+import qualified Data.ByteString as ByteString (null)
 import Numeric
 import Data.IORef
 
@@ -70,6 +74,7 @@ data LispVal = Atom String
              | Func { params :: [String], vararg :: (Maybe String),
                       body :: [LispVal], closure :: Env }
              | HashMap (HashTable LispVal LispVal)
+             | LispSocket Socket
 
 unwordsList :: [LispVal] -> String
 unwordsList = unwords . map showVal
@@ -455,6 +460,33 @@ hashmapLookup env (HashMap ht) key = do
     Nothing  -> return $ Bool False
     Just val -> return val
 
+socketCreate :: Integer -> IO LispVal
+socketCreate port = do
+  s <- socket AF_INET Stream 0
+  bind s (SockAddrInet (fromInteger port) 0)
+  return $ LispSocket s
+
+socketListen :: LispVal -> IO ()
+socketListen (LispSocket s) = listen s 2
+
+socketAccept :: LispVal -> IO LispVal
+socketAccept (LispSocket s) = do
+  (conn, _) <- accept s
+  return $ LispSocket conn
+
+socketReceive :: LispVal -> Integer -> IO LispVal
+socketReceive (LispSocket s) n = do
+  dat <- B.recv s (fromInteger n)
+  return $ String $ show dat
+
+socketSend :: LispVal -> String -> IO LispVal
+socketSend (LispSocket s) dat = do
+  n <- B.send s (BU.fromString dat)
+  return $ Number $ toInteger n
+
+socketClose :: LispVal -> IO ()
+socketClose (LispSocket s) = close s
+
 apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
 apply (PrimitiveFunc func) args = liftThrows $ func args
 apply (IOFunc func) args = func args
@@ -573,6 +605,35 @@ eval env (List [Atom "hashmap-lookup", Atom var, key]) = do
   k <- eval env key
   val <- liftIO $ hashmapLookup env v k
   return val
+
+eval env (List [Atom "socket-create", Number port, Atom var]) = do
+  sock <- liftIO $ socketCreate port
+  defineVar env var sock
+
+eval env (List [Atom "socket-listen", Atom var]) = do
+  v <- getVar env var
+  liftIO $ socketListen v
+  return v
+
+eval env (List [Atom "socket-accept", Atom var]) = do
+  v <- getVar env var
+  socket <- liftIO $ socketAccept v
+  return socket
+
+eval env (List [Atom "socket-receive", Atom var, Number n]) = do
+  v <- getVar env var
+  dat <- liftIO $ socketReceive v n
+  return dat
+
+eval env (List [Atom "socket-send", Atom var, String dat]) = do
+  v <- getVar env var
+  n <- liftIO $ socketSend v dat
+  return n
+
+eval env (List [Atom "socket-close", Atom var]) = do
+  v <- getVar env var
+  liftIO $ socketClose v
+  return $ Bool True
 
 eval env (List (function : args)) = do
   func <- eval env function
