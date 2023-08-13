@@ -98,6 +98,7 @@ showVal (Func {params = args, vararg = varargs, body = body, closure = env}) =
 showVal (IOFunc _) = "<IO primitive>"
 showVal (Port _) = "<IO port>"
 showVal (HashMap _) = "<HashMap>"
+showVal (LispSocket _) = "<Socket>"
 
 instance Show LispVal where show = showVal
 
@@ -139,6 +140,7 @@ showError (NumArgs expected found)      = "Expected " ++ show expected
 showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected
                                        ++ ", found " ++ show found
 showError (Parser parseErr)             = "Parse error at " ++ show parseErr
+showError (Default err)					= "Error: " ++ err
 
 instance Show LispError where show = showError
 
@@ -285,20 +287,42 @@ unpackBool (Bool b) = return b
 unpackBool notBool  = throwError $ TypeMismatch "boolean" notBool
 
 typeOp :: String -> [LispVal] -> ThrowsError LispVal
-typeOp "symbol" [Atom _]   = return (Bool True)
-typeOp "symbol" [t]        = return (Bool False)
-typeOp "string" [String _] = return (Bool True)
-typeOp "string" [t]        = return (Bool False)
-typeOp "number" [Number _] = return (Bool True)
-typeOp "number" [t]        = return (Bool False)
+typeOp "symbol" [Atom _]   		 = return $ Bool True
+typeOp "symbol" [t]        		 = return $ Bool False
+typeOp "string" [String _] 		 = return $ Bool True
+typeOp "string" [t]        		 = return $ Bool False
+typeOp "number" [Number _] 		 = return $ Bool True
+typeOp "number" [t]        		 = return $ Bool False
+typeOp "character" [Character _] = return $ Bool True
+typeOp "character" [t] 			 = return $ Bool False
 typeOp _ badArgList        = throwError $ NumArgs 1 badArgList
 
-symbolOp :: String -> [LispVal] -> ThrowsError LispVal
-symbolOp "toStr" [Atom sym]   = return (String sym)
-symbolOp "toStr" [t]          = throwError $ TypeMismatch "symbol" t
-symbolOp "fromStr" [String s] = return (Atom s)
-symbolOp "fromStr" [t]        = throwError $ TypeMismatch "string" t
-symbolOp _ badArgList         = throwError $ NumArgs 1 badArgList
+transformOp :: String -> [LispVal] -> ThrowsError LispVal
+transformOp "symToStr" [Atom sym]     = return $ String sym
+transformOp "symToStr" [t]            = throwError $ TypeMismatch "symbol" t
+
+transformOp "listToStr" [List l] = do
+  s <- charsToString l
+  return $ String s
+
+  where charsToString :: [LispVal] -> ThrowsError String
+        charsToString (Character c : cs) = do
+          s <- charsToString cs
+          return (c : s)
+        charsToString []                 = return []
+        charsToString _                  = throwError $ Default "List must only consist of characters"
+
+transformOp "listToStr" [t] = throwError $ TypeMismatch "list" t
+transformOp "strToList" [String s]    = return $ List $ map (\c -> Character c) s
+transformOp "strToList" [t] = throwError $ TypeMismatch "string" t
+transformOp "strToSym" [String s]     = return $ Atom s
+transformOp "strToSym" [t]            = throwError $ TypeMismatch "string" t
+transformOp "charToSym" [Character c]  = return $ Atom [c]
+transformOp "charToSym" [t]            = throwError $ TypeMismatch "character" t
+transformOp "symToChar" [Atom [c]]    = return $ Character c
+transformOp "symtoChar" [Atom (c:cs)] = throwError $ Default "Symbol must only consist of one character"
+transformOp "symToChar" [t]           = throwError $ TypeMismatch "symbol" t
+transformOp _ badArgList           = throwError $ NumArgs 1 badArgList
 
 numBoolBinop  = boolBinop unpackNum
 strBoolBinop  = boolBinop unpackStr
@@ -375,8 +399,12 @@ primitives = [("+", numericBinop (+)),
               ("symbol?", typeOp "symbol"),
               ("string?", typeOp "string"),
               ("number?", typeOp "number"),
-              ("symbol->string", symbolOp "toStr"),
-              ("string->symbol", symbolOp "fromStr"),
+              ("symbol->string", transformOp "symToStr"),
+              ("list->string", transformOp "listToStr"),
+              ("string->symbol", transformOp "strToSym"),
+              ("char->symbol", transformOp "charToSym"),
+              ("symbol->char", transformOp "symToChar"),
+              ("string->list", transformOp "strToList"),
 			  ("=", numBoolBinop (==)),
 			  ("<", numBoolBinop (<)),
 			  (">", numBoolBinop (>)),
@@ -415,8 +443,15 @@ readProc []          = readProc [Port stdin]
 readProc [Port port] = (liftIO $ hGetLine port) >>= liftThrows . readExpr
 
 writeProc :: [LispVal] -> IOThrowsError LispVal
-writeProc [obj]            = writeProc [obj, Port stdout]
-writeProc [obj, Port port] = liftIO $ hPrint port obj >> (return $ Bool True)
+writeProc [obj]                 = writeProc [obj, Port stdout]
+writeProc [obj, Port port]      = liftIO $ (hPutStr port . show) obj >> (return $ Bool True)
+
+displayProc :: [LispVal] -> IOThrowsError LispVal
+displayProc [String s] = liftIO $ hPutStr stdout s >> hFlush stdout >> (return $ Bool True)
+displayProc obj        = writeProc obj
+
+newlineProc :: [LispVal] -> IOThrowsError LispVal
+newlineProc _ = liftIO $ hPutStrLn stdout "" >> (return $ Bool True)
 
 readContents :: [LispVal] -> IOThrowsError LispVal
 readContents [String filename] = liftM String $ liftIO $ readFile filename
@@ -435,6 +470,8 @@ ioPrimitives = [("apply", applyProc),
                 ("close-output-port", closePort),
                 ("read", readProc),
                 ("write", writeProc),
+                ("display", displayProc),
+                ("newline", newlineProc),
                 ("read-contents", readContents),
                 ("read-all", readAll)]
 
