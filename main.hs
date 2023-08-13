@@ -10,8 +10,9 @@ import Network.Socket
 import qualified Network.Socket.ByteString as B
 import Data.ByteString.UTF8 as BU (fromString)
 import qualified Data.ByteString as ByteString (null)
-import Numeric
+import qualified Data.List.Split as Sp
 import Data.IORef
+import Numeric
 
 type Env = IORef [(String, IORef LispVal)]
 
@@ -497,11 +498,16 @@ hashmapLookup env (HashMap ht) key = do
     Nothing  -> return $ Bool False
     Just val -> return val
 
-socketCreate :: Integer -> IO LispVal
-socketCreate port = do
+convAddr :: String -> (Int, Int, Int, Int)
+convAddr = toTuple . map read . Sp.splitOn "."
+  where toTuple [w, x, y, z] = (w, x, y, z)
+
+socketCreate :: (Int, Int, Int, Int) -> Integer -> IO LispVal
+socketCreate address port = do
   s <- socket AF_INET Stream 0
-  bind s (SockAddrInet (fromInteger port) 0)
+  bind s (SockAddrInet (fromInteger port) (tupleToHostAddress $ mapTuple fromIntegral address))
   return $ LispSocket s
+    where mapTuple f (w, x, y, z) = (f w, f x, f y, f z)
 
 socketListen :: LispVal -> IO ()
 socketListen (LispSocket s) = listen s 2
@@ -643,8 +649,8 @@ eval env (List [Atom "hashmap-lookup", Atom var, key]) = do
   val <- liftIO $ hashmapLookup env v k
   return val
 
-eval env (List [Atom "socket-create", Number port, Atom var]) = do
-  sock <- liftIO $ socketCreate port
+eval env (List [Atom "socket-create", String addr, Number port, Atom var]) = do
+  sock <- liftIO $ socketCreate (convAddr addr) port
   defineVar env var sock
 
 eval env (List [Atom "socket-listen", Atom var]) = do
