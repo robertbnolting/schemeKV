@@ -58,3 +58,6 @@ This feature makes the database program extensible by the user.
 - `ex`: evaluate the expression stored at key (mainly useful for stored lambda-expressions)
 - `ev`: evaluate any scheme expression
 - `pers`: save the key-value pair at key to a file to make it persistent
+
+## Installation
+The interpreter can be built with [cabal](https://www.haskell.org/cabal/).
