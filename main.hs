@@ -19,6 +19,8 @@ type Env = IORef [(String, IORef LispVal)]
 
 type HashTable k v = H.BasicHashTable k v
 
+-- ENVIRONMENT --
+
 nullEnv :: IO Env
 nullEnv = newIORef []
 
@@ -155,6 +157,8 @@ trapError action = catchError action (return . show)
 extractValue :: ThrowsError a -> a
 extractValue (Right val) = val
 
+-- PARSING --
+
 spaces :: Parser ()
 spaces = skipMany1 space
 
@@ -289,6 +293,8 @@ unpackStr notString  = throwError $ TypeMismatch "string" notString
 unpackBool :: LispVal -> ThrowsError Bool
 unpackBool (Bool b) = return b
 unpackBool notBool  = throwError $ TypeMismatch "boolean" notBool
+
+-- PRIMITIVES --
 
 typeOp :: String -> [LispVal] -> ThrowsError LispVal
 typeOp "symbol" [Atom _]   		 = return $ Bool True
@@ -466,6 +472,8 @@ primitives = [("+", numericBinop (+)),
 			  ("string-ref", stringRef),
 			  ("string-append", stringAppend)]
 
+-- I/O --
+
 applyProc :: [LispVal] -> IOThrowsError LispVal
 applyProc [func, List args] = apply func args
 applyProc (func : args)     = apply func args
@@ -535,6 +543,8 @@ makeFunc varargs env params body = return $ Func (map showVal params) varargs bo
 makeNormalFunc = makeFunc Nothing
 makeVarArgs = makeFunc . Just . showVal
 
+-- HASHMAP --
+
 makeHashMap :: Env -> IO LispVal
 makeHashMap env = do
   ht <- H.new
@@ -552,6 +562,8 @@ hashmapLookup env (HashMap ht) key = do
   case res of
     Nothing  -> return $ Bool False
     Just val -> return val
+
+-- SOCKETS --
 
 convAddr :: String -> (Int, Int, Int, Int)
 convAddr = toTuple . map read . Sp.splitOn "."
@@ -594,6 +606,8 @@ socketSend (LispSocket s) dat = do
 
 socketClose :: LispVal -> IO ()
 socketClose (LispSocket s) = close s
+
+-- EVALUATION --
 
 apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
 apply (PrimitiveFunc func) args = liftThrows $ func args
@@ -785,6 +799,8 @@ eval env (List (function : args)) = do
   apply func argVals
 
 eval env badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+
+-- REPL --
 
 readOrThrow :: Parser a -> String -> ThrowsError a
 readOrThrow parser input = case parse parser "lisp" input of
