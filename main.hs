@@ -12,6 +12,7 @@ import Data.ByteString.UTF8 as BU (fromString)
 import qualified Data.ByteString as ByteString (null)
 import qualified Data.List.Split as Sp
 import Data.IORef
+import Text.Read (readMaybe)
 import Numeric
 
 type Env = IORef [(String, IORef LispVal)]
@@ -130,6 +131,7 @@ data LispError = NumArgs Integer [LispVal]
                | BadSpecialForm String LispVal
                | NotFunction String String
                | UnboundVar String String
+               | Application String
                | Default String
 
 showError :: LispError -> String
@@ -141,6 +143,7 @@ showError (NumArgs expected found)      = "Expected " ++ show expected
 showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected
                                        ++ ", found " ++ show found
 showError (Parser parseErr)             = "Parse error at " ++ show parseErr
+showError (Application err)             = "Function application error: " ++ err
 showError (Default err)					= "Error: " ++ err
 
 instance Show LispError where show = showError
@@ -310,16 +313,22 @@ transformOp "listToStr" [List l] = do
         charsToString (Character c : cs) = do
           s <- charsToString cs
           return (c : s)
-        charsToString []                 = return []
-        charsToString _                  = throwError $ Default "List must only consist of characters"
+        charsToString []              = return []
+        charsToString _               = throwError $ Default "List must only consist of characters"
 
-transformOp "listToStr" [t] = throwError $ TypeMismatch "list" t
+transformOp "listToStr" [t]           = throwError $ TypeMismatch "list" t
 transformOp "strToList" [String s]    = return $ List $ map (\c -> Character c) s
-transformOp "strToList" [t] = throwError $ TypeMismatch "string" t
+transformOp "strToList" [t]           = throwError $ TypeMismatch "string" t
 transformOp "strToSym" [String s]     = return $ Atom s
 transformOp "strToSym" [t]            = throwError $ TypeMismatch "string" t
-transformOp "charToSym" [Character c]  = return $ Atom [c]
-transformOp "charToSym" [t]            = throwError $ TypeMismatch "character" t
+transformOp "strToNum" [String s]     = case readMaybe s of
+                                          Nothing -> return $ Bool False
+                                          Just n  -> return $ Number n
+transformOp "strToNum" [t]            = throwError $ TypeMismatch "string" t
+transformOp "numToStr" [Number n]     = return $ String $ show n
+transformOp "numToStr" [t]            = throwError $ TypeMismatch "number" t
+transformOp "charToSym" [Character c] = return $ Atom [c]
+transformOp "charToSym" [t]           = throwError $ TypeMismatch "character" t
 transformOp "symToChar" [Atom [c]]    = return $ Character c
 transformOp "symtoChar" [Atom (c:cs)] = throwError $ Default "Symbol must only consist of one character"
 transformOp "symToChar" [t]           = throwError $ TypeMismatch "symbol" t
@@ -360,6 +369,7 @@ eqv :: [LispVal] -> ThrowsError LispVal
 eqv [(Bool arg1), (Bool arg2)]             = return $ Bool $ arg1 == arg2
 eqv [(Number arg1), (Number arg2)]         = return $ Bool $ arg1 == arg2
 eqv [(String arg1), (String arg2)]         = return $ Bool $ arg1 == arg2
+eqv [(Character arg1), (Character arg2)]   = return $ Bool $ arg1 == arg2
 eqv [(Atom arg1), (Atom arg2)]             = return $ Bool $ arg1 == arg2
 eqv [(DottedList xs x), (DottedList ys y)] = eqv [List $ xs ++ [x], List $ ys ++ [y]]
 eqv [(List arg1), (List arg2)]
@@ -370,13 +380,28 @@ eqv [(List arg1), (List arg2)]
 eqv [_, _]                                 = return $ Bool False
 eqv badArgList                             = throwError $ NumArgs 2 badArgList
 
-toString :: [LispVal] -> ThrowsError LispVal
-toString s = liftM String $ appendStr s
+charsToString :: [LispVal] -> ThrowsError LispVal
+charsToString s = liftM String $ appendStr s
   where appendStr (Character c : cs) = do str <- appendStr cs
                                           return $ (c : str)
         appendStr [] = return ""
         appendStr (notChar:_) = throwError $ TypeMismatch "char" notChar
         appendStr :: [LispVal] -> ThrowsError String
+
+toString :: [LispVal] -> ThrowsError LispVal
+toString [Func p _ b _] = return . String $ "(lambda (" ++ (foldr (\x y -> if y /= [] then (x ++ " " ++ y) else x) "" p) ++ ") " ++ (foldr (++) "" (map (show) b)) ++ ")"
+toString [expr]         = return . String $ show expr
+toString badArgList     = throwError $ NumArgs 1 badArgList
+
+cleanupBackslash :: String -> String
+cleanupBackslash ('\\':cs) = cleanupBackslash cs
+cleanupBackslash (c:cs)    = c : (cleanupBackslash cs)
+cleanupBackslash []        = []
+
+unString :: [LispVal] -> ThrowsError LispVal
+unString [String s] = readExpr $ cleanupBackslash s
+unString [t]        = throwError $ TypeMismatch "string" t
+unString badArgList = throwError $ NumArgs 1 badArgList
 
 stringLength :: [LispVal] -> ThrowsError LispVal
 stringLength [String s] = return . Number . toInteger $ length s
@@ -389,6 +414,13 @@ stringRef [t, Number n]               = throwError $ TypeMismatch "string" t
 stringRef [String s, t]               = throwError $ TypeMismatch "number" t
 stringRef badArgList           = throwError $ NumArgs 2 badArgList
 
+stringAppend :: [LispVal] -> ThrowsError LispVal
+stringAppend strs@(String s : ss) = return . String $ appendStrs strs
+  where appendStrs ((String str) : strs) = str ++ (appendStrs strs)
+        appendStrs []                    = ""
+stringAppend [t] = throwError $ TypeMismatch "string" t
+stringAppend badArgList = throwError $ NumArgs 2 badArgList
+
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives = [("+", numericBinop (+)),
               ("-", numericBinop (-)),
@@ -400,12 +432,15 @@ primitives = [("+", numericBinop (+)),
               ("symbol?", typeOp "symbol"),
               ("string?", typeOp "string"),
               ("number?", typeOp "number"),
+              ("char?", typeOp "character"),
               ("symbol->string", transformOp "symToStr"),
               ("list->string", transformOp "listToStr"),
               ("string->symbol", transformOp "strToSym"),
               ("char->symbol", transformOp "charToSym"),
               ("symbol->char", transformOp "symToChar"),
               ("string->list", transformOp "strToList"),
+			  ("string->number", transformOp "strToNum"),
+			  ("number->string", transformOp "numToStr"),
 			  ("=", numBoolBinop (==)),
 			  ("<", numBoolBinop (<)),
 			  (">", numBoolBinop (>)),
@@ -424,9 +459,12 @@ primitives = [("+", numericBinop (+)),
 			  ("cons", cons),
 			  ("eq?", eqv),
 			  ("eqv?", eqv),
-			  ("string", toString),
+			  ("stringify", toString),
+			  ("unstringify", unString),
+			  ("string", charsToString),
 			  ("string-length", stringLength),
-			  ("string-ref", stringRef)]
+			  ("string-ref", stringRef),
+			  ("string-append", stringAppend)]
 
 applyProc :: [LispVal] -> IOThrowsError LispVal
 applyProc [func, List args] = apply func args
@@ -441,15 +479,29 @@ closePort _           = return $ Bool False
 
 readProc :: [LispVal] -> IOThrowsError LispVal
 readProc []          = readProc [Port stdin]
-readProc [Port port] = (liftIO $ hGetLine port) >>= liftThrows . readExpr
+readProc [Port port] = do
+  eof <- liftIO $ hIsEOF port
+  if eof
+    then (liftIO $ hGetLine port) >>= liftThrows . readExpr
+    else return $ String ""
+
+readRaw :: [LispVal] -> IOThrowsError LispVal
+readRaw []          = readRaw [Port stdin]
+readRaw [Port port] = do
+  eof <- liftIO $ hIsEOF port
+  if eof
+    then return $ String ""
+    else (liftIO $ hGetLine port) >>= (return . String)
 
 writeProc :: [LispVal] -> IOThrowsError LispVal
 writeProc [obj]                 = writeProc [obj, Port stdout]
 writeProc [obj, Port port]      = liftIO $ (hPutStr port . show) obj >> (return $ Bool True)
 
 displayProc :: [LispVal] -> IOThrowsError LispVal
-displayProc [String s] = liftIO $ hPutStr stdout s >> hFlush stdout >> (return $ Bool True)
-displayProc obj        = writeProc obj
+displayProc [str@(String s)]      = displayProc [str, Port stdout]
+displayProc [String s, Port port] = liftIO $ hPutStr port s >> hFlush stdout >> (return $ Bool True)
+displayProc [obj] = writeProc [obj]
+displayProc [obj, p@(Port port)] = writeProc [obj, p]
 
 newlineProc :: [LispVal] -> IOThrowsError LispVal
 newlineProc _ = liftIO $ hPutStrLn stdout "" >> (return $ Bool True)
@@ -467,9 +519,12 @@ ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
 ioPrimitives = [("apply", applyProc),
                 ("open-input-file", makePort ReadMode),
                 ("open-output-file", makePort WriteMode),
+                ("open-append-file", makePort AppendMode),
                 ("close-input-port", closePort),
+                ("close-append-port", closePort),
                 ("close-output-port", closePort),
                 ("read", readProc),
+                ("read-raw", readRaw),
                 ("write", writeProc),
                 ("display", displayProc),
                 ("newline", newlineProc),
@@ -502,15 +557,25 @@ convAddr :: String -> (Int, Int, Int, Int)
 convAddr = toTuple . map read . Sp.splitOn "."
   where toTuple [w, x, y, z] = (w, x, y, z)
 
-socketCreate :: (Int, Int, Int, Int) -> Integer -> IO LispVal
-socketCreate address port = do
+socketCreate :: IO LispVal
+socketCreate = do
   s <- socket AF_INET Stream 0
+  return $ LispSocket s
+
+socketBind :: LispVal -> (Int, Int, Int, Int) -> Integer -> IO LispVal
+socketBind (LispSocket s) address port = do
   bind s (SockAddrInet (fromInteger port) (tupleToHostAddress $ mapTuple fromIntegral address))
   return $ LispSocket s
     where mapTuple f (w, x, y, z) = (f w, f x, f y, f z)
 
 socketListen :: LispVal -> IO ()
 socketListen (LispSocket s) = listen s 2
+
+socketConnect :: LispVal -> (Int, Int, Int, Int) -> Integer -> IO LispVal
+socketConnect (LispSocket s) address port = do
+  connect s (SockAddrInet (fromInteger port) (tupleToHostAddress $ mapTuple fromIntegral address))
+  return $ LispSocket s
+    where mapTuple f (w, x, y, z) = (f w, f x, f y, f z)
 
 socketAccept :: LispVal -> IO LispVal
 socketAccept (LispSocket s) = do
@@ -546,6 +611,8 @@ apply (Func params varargs body closure) args =
           Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
           Nothing -> return env
 
+apply _ _ = throwError $ Application "Form not recognized."
+
 eval :: Env -> LispVal -> IOThrowsError LispVal
 eval env val@(String _) = return val
 eval env val@(Character _) = return val
@@ -553,6 +620,14 @@ eval env val@(Number _) = return val
 eval env val@(Float _) = return val
 eval env val@(Bool _) = return val
 eval env (List [Atom "quote", val]) = return val
+eval env (List [Atom "eval", a@(Atom f)]) = if null l then eval env a else return . PrimitiveFunc . snd . head $ l
+  where l = filter isPrimitive primitives
+        isPrimitive (op, func) = op == f
+eval env (List [Atom "eval", (List [Atom "quote", rest])]) = return rest
+eval env (List [Atom "eval", e@(List expr)]) = do
+  exp <- eval env e
+  eval env $ (List [Atom "eval", exp])
+eval env (List [Atom "eval", expr]) = eval env expr
 eval env (List [Atom "if", pred, conseq, alt]) =
   do
     result <- eval env pred
@@ -649,14 +724,34 @@ eval env (List [Atom "hashmap-lookup", Atom var, key]) = do
   val <- liftIO $ hashmapLookup env v k
   return val
 
-eval env (List [Atom "socket-create", String addr, Number port, Atom var]) = do
-  sock <- liftIO $ socketCreate (convAddr addr) port
+eval env (List [Atom "socket-create", Atom var]) = do
+  sock <- liftIO $ socketCreate
   defineVar env var sock
+
+eval env (List [Atom "socket-bind", Atom var, String addr, Number port]) = do
+  v <- getVar env var
+  sock <- liftIO $ socketBind v (convAddr addr) port
+  return v
+
+eval env (List [Atom "socket-bind", Atom var, addr, port]) = do
+  a <- eval env addr
+  p <- eval env port
+  eval env (List [Atom "socket-bind", Atom var, a, p])
 
 eval env (List [Atom "socket-listen", Atom var]) = do
   v <- getVar env var
   liftIO $ socketListen v
   return v
+
+eval env (List [Atom "socket-connect", Atom var, String addr, Number port]) = do
+  v <- getVar env var
+  sock <- liftIO $ socketConnect v (convAddr addr) port
+  return v
+
+eval env (List [Atom "socket-connect", Atom var, addr, port]) = do
+  a <- eval env addr
+  p <- eval env port
+  eval env (List [Atom "socket-connect", Atom var, a, p])
 
 eval env (List [Atom "socket-accept", Atom var]) = do
   v <- getVar env var
@@ -673,10 +768,16 @@ eval env (List [Atom "socket-send", Atom var, String dat]) = do
   n <- liftIO $ socketSend v dat
   return n
 
+eval env (List [Atom "socket-send", Atom var, dat]) = do
+  d <- eval env dat
+  eval env (List [Atom "socket-send", Atom var, d])
+
 eval env (List [Atom "socket-close", Atom var]) = do
   v <- getVar env var
   liftIO $ socketClose v
   return $ Bool True
+
+eval env f@(Func _ _ _ _) = return f
 
 eval env (List (function : args)) = do
   func <- eval env function
