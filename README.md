@@ -1,7 +1,7 @@
 # schemeKV - A simple key-value database in scheme
 
 ## Introduction
-This project contains a custom scheme interpreter, able to run schemeKV, a s-expression-based key-value database.
+This project contains a custom [scheme](https://en.wikipedia.org/wiki/Scheme_(programming_language)) interpreter, able to run schemeKV, a s-expression-based [key-value database](https://en.wikipedia.org/wiki/Key%E2%80%93value_database).
 
 ## Interpreter
 The basic scheme interpreter is from this well-known [tutorial](https://en.wikibooks.org/wiki/Write_Yourself_a_Scheme_in_48_Hours/) (can be found in the 'base' branch).
