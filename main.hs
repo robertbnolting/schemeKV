@@ -14,10 +14,39 @@ import qualified Data.List.Split as Sp
 import Data.IORef
 import Text.Read (readMaybe)
 import Numeric
+import System.Console.Haskeline
 
 type Env = IORef [(String, IORef LispVal)]
 
 type HashTable k v = H.BasicHashTable k v
+
+-- USER INTERACTIONS
+main :: IO ()
+main = do
+        args <- getArgs
+        if null args then startRepl else runFile args
+
+runFile :: [String] -> IO ()
+runFile args = do
+  env <- primitiveBindings >>= flip bindVars [("args", List $ map String $ drop 1 args)]
+  (runIOThrows $ liftM show $ eval env (List [Atom "load", String (args !! 0)]))
+    >>= hPutStrLn stderr
+
+startRepl :: IO ()
+startRepl = runInputT (defaultSettings {historyFile = Just ".history"}) $ withInterrupt $ loop 0 primitiveBindings
+    where
+        loop :: Int -> IO Env -> InputT IO ()
+        loop n envIO = do
+            minput <-  handleInterrupt (return (Just "Caught interrupted"))
+                        $ getInputLine (show n ++ "λ > ")
+            case minput of
+                Nothing -> return ()
+                Just "quit" -> return ()
+                Just "q" -> return ()
+                Just s -> do
+                             env <- liftIO envIO
+                             lift $ evalAndPrint env s >> envIO
+                             loop (n+1) envIO
 
 -- ENVIRONMENT --
 
@@ -807,14 +836,11 @@ readOrThrow parser input = case parse parser "lisp" input of
   Left err  -> throwError $ Parser err
   Right val -> return val
 
+readExpr :: String -> ThrowsError LispVal
 readExpr = readOrThrow parseExpr
+
+readExprList :: String -> ThrowsError [LispVal]
 readExprList = readOrThrow (endBy parseExpr spaces)
-
-flushStr :: String -> IO ()
-flushStr str = putStr str >> hFlush stdout
-
-readPrompt :: String -> IO String
-readPrompt prompt = flushStr prompt >> getLine
 
 evalString :: Env -> String -> IO String
 evalString env expr = runIOThrows $ liftM show $ (liftThrows $ readExpr expr) >>= eval env
@@ -822,24 +848,3 @@ evalString env expr = runIOThrows $ liftM show $ (liftThrows $ readExpr expr) >>
 evalAndPrint :: Env -> String -> IO ()
 evalAndPrint env "" = return ()
 evalAndPrint env expr = evalString env expr >>= putStrLn
-
-until_ :: Monad m => (a -> Bool) -> m a -> (a -> m ()) -> m ()
-until_ pred prompt action = do
-  result <- prompt
-  if pred result
-    then return ()
-    else action result >> until_ pred prompt action
-
-runFile :: [String] -> IO ()
-runFile args = do
-  env <- primitiveBindings >>= flip bindVars [("args", List $ map String $ drop 1 args)]
-  (runIOThrows $ liftM show $ eval env (List [Atom "load", String (args !! 0)]))
-    >>= hPutStrLn stderr
-
-runRepl :: IO ()
-runRepl = primitiveBindings >>= until_ (== "quit") (readPrompt "Lisp>>> ") . evalAndPrint
-
-main :: IO ()
-main = do
-  args <- getArgs
-  if null args then runRepl else runFile $ args

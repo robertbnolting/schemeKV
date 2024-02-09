@@ -5,7 +5,7 @@ version:            0.1.0.0
 executable scheme
     main-is:          main.hs
 
-    build-depends:    base ^>=4.14.3.0,
+    build-depends:    base,
                       unordered-containers,
 		      parsec,
                       mtl,
@@ -14,6 +14,7 @@ executable scheme
                       network,
                       bytestring,
                       utf8-string,
-                      split
+                      split,
+                      haskeline
     hs-source-dirs:   .
     default-language: Haskell2010
